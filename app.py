@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Fragment Cutter 2.2 — пакетна нарізка фрагментів з YouTube зі списку.
+"""Fragment Cutter 2.3 — пакетна нарізка фрагментів з YouTube зі списку.
 
 Одне вікно: вставляєш список (рядок = посилання + час, напр.
 «https://youtu.be/... 0:47-1:04») — програма послідовно нарізає всі
@@ -22,11 +22,10 @@ import subprocess
 import requests
 import tkinter
 import customtkinter as ctk
-from tkinter import messagebox
 
 APP_TITLE = "Fragment Cutter"
-APP_VERSION = "2.2"
-UA_STRING = "FragmentCutter/2.2 (Windows)"
+APP_VERSION = "2.3"
+UA_STRING = "FragmentCutter/2.3 (Windows)"
 
 OUT_DIR = os.path.join(os.path.expanduser("~"), "Videos", "Fragments")
 LOG_FILE = os.path.join(OUT_DIR, "fragcut.log")
@@ -288,16 +287,16 @@ class App(ctk.CTk):
         try:
             os.startfile(OUT_DIR)
         except Exception as e:
-            messagebox.showerror(APP_TITLE, str(e))
+            self._journal("❌ Не вдалося відкрити папку: " + str(e))
 
     def open_log(self):
         try:
             if not os.path.isfile(LOG_FILE):
-                messagebox.showinfo(APP_TITLE, "Лог-файл з'явиться після першої нарізки:\n" + LOG_FILE)
+                self._journal("ℹ️ Лог-файл з'явиться після першої нарізки:\n" + LOG_FILE)
                 return
             os.startfile(LOG_FILE)
         except Exception as e:
-            messagebox.showerror(APP_TITLE, str(e))
+            self._journal("❌ Не вдалося відкрити лог-файл: " + str(e))
 
     def paste_list(self):
         """Вставити список фрагментів з буфера обміну."""
@@ -362,7 +361,7 @@ class App(ctk.CTk):
             return
         raw = self.source.get("1.0", "end").strip()
         if not raw:
-            messagebox.showwarning(APP_TITLE, "Встав список фрагментів.\nОдин рядок: посилання 0:47-1:04")
+            self._journal("⚠️ Встав список фрагментів. Один рядок: посилання 0:47-1:04")
             return
         items, bad = parse_list(raw)
         for ln, why in bad[:6]:
@@ -370,8 +369,7 @@ class App(ctk.CTk):
         if bad:
             self._journal("⚠️ Хибних рядків: {} — їх пропущено".format(len(bad)))
         if not items:
-            messagebox.showwarning(APP_TITLE, "Не знайшов жодного валідного фрагмента.\n\n"
-                                             "Приклад рядка:\nhttps://youtu.be/VIDEO_ID 0:47-1:04")
+            self._journal("⚠️ Не знайшов жодного валідного фрагмента. Приклад рядка: https://youtu.be/VIDEO_ID 0:47-1:04")
             return
         self.running = True
         self.go.configure(state="disabled")
@@ -493,7 +491,7 @@ class App(ctk.CTk):
         self.go.configure(state="normal")
         if not failed:
             self.status.configure(text="● Готово: {} з {}".format(done_ok, total), text_color=GREEN)
-            messagebox.showinfo(APP_TITLE, "Нарізано {} з {} фрагментів.\nПапку відкрито.".format(done_ok, total))
+            self._journal("✔️ Нарізано {} з {} фрагментів. Папку відкрито.".format(done_ok, total))
             try:
                 os.startfile(OUT_DIR)
             except Exception:
@@ -501,17 +499,14 @@ class App(ctk.CTk):
         elif done_ok:
             self.status.configure(text="● Готово: {} з {} (не вдалися: {})".format(done_ok, total, ", ".join(failed)),
                                   text_color="#F59E0B")
-            messagebox.showwarning(APP_TITLE, "Нарізано {} з {}.\nНе вдалося: {}.\n\n"
-                                           "Натисни «📋 Копіювати журнал» і надішли текст.".format(done_ok, total, ", ".join(failed)))
+            self._journal("⚠️ Нарізано {} з {}. Не вдалося: {}. Натисни «📋 Копіювати журнал» і надішли текст.".format(done_ok, total, ", ".join(failed)))
             try:
                 os.startfile(OUT_DIR)
             except Exception:
                 pass
         else:
             self.status.configure(text="● Не вдалося нарізати", text_color="#FF453A")
-            messagebox.showerror(APP_TITLE,
-                                 "Фрагменти не нарізано.\nНатисни «📋 Копіювати журнал» "
-                                 "і надішли текст.\nПовні деталі у файлі:\n" + LOG_FILE)
+            self._journal("❌ Фрагменти не нарізано. Натисни «📋 Копіювати журнал» і надішли текст. Повні деталі у файлі: " + LOG_FILE)
 
     def _poll(self):
         try:
