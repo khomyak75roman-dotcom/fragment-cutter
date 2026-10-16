@@ -1,4 +1,4 @@
-; Fragment Cutter — Inno Setup script
+; Fragment Cutter - Inno Setup script
 [Setup]
 AppId={{8C4F2B1A-9D3E-4F6A-B7C8-1E2D3A4B5C6D}
 AppName=Fragment Cutter
@@ -17,7 +17,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
 [Files]
-Source: "dist\FragmentCutter.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\FragmentCutter\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Fragment Cutter"; Filename: "{app}\FragmentCutter.exe"
