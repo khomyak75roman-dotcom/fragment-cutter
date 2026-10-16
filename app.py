@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Fragment Cutter 2.0 — пакетна нарізка фрагментів з YouTube зі списку.
+"""Fragment Cutter 2.2 — пакетна нарізка фрагментів з YouTube зі списку.
 
 Одне вікно: вставляєш список (рядок = посилання + час, напр.
 «https://youtu.be/... 0:47-1:04») — програма послідовно нарізає всі
@@ -25,8 +25,8 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 APP_TITLE = "Fragment Cutter"
-APP_VERSION = "2.0"
-UA_STRING = "FragmentCutter/2.0 (Windows)"
+APP_VERSION = "2.2"
+UA_STRING = "FragmentCutter/2.2 (Windows)"
 
 OUT_DIR = os.path.join(os.path.expanduser("~"), "Videos", "Fragments")
 LOG_FILE = os.path.join(OUT_DIR, "fragcut.log")
@@ -232,14 +232,20 @@ class App(ctk.CTk):
         inner = ctk.CTkFrame(card, fg_color="transparent")
         inner.pack(fill="both", expand=True, padx=22, pady=18)
 
-        ctk.CTkLabel(inner, text="📋 Список фрагментів (встав сюди)",
-                     font=("Segoe UI", 15, "bold"), text_color=TEXT).pack(anchor="w")
+        srow = ctk.CTkFrame(inner, fg_color="transparent")
+        srow.pack(fill="x")
+        ctk.CTkLabel(srow, text="📋 Список фрагментів",
+                     font=("Segoe UI", 15, "bold"), text_color=TEXT).pack(side="left")
+        ctk.CTkButton(srow, text="🗑 Очистити", height=34, corner_radius=17,
+                      fg_color=INSET, hover_color=HOVER, command=self.clear_list).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(srow, text="📋 Вставити список", height=34, corner_radius=17,
+                      fg_color=ACCENT, hover_color="#0066CC", command=self.paste_list).pack(side="right")
         self.source = ctk.CTkTextbox(inner, height=180, corner_radius=12, fg_color=INSET,
                                      font=("Consolas", 13), text_color=TEXT)
         self.source.pack(fill="both", expand=True, pady=(6, 8))
 
-        ctk.CTkLabel(inner, text="Один рядок = один фрагмент: посилання 0:47-1:04\n"
-                                 "Розділювач часу: дефіс, тире або пробіл • рядки з # ігноруються • Ctrl+Enter = нарізати\n"
+        ctk.CTkLabel(inner, text="Натисни синю кнопку «📋 Вставити список» (або клацни в поле і Ctrl+V).\n"
+                                 "Один рядок = один фрагмент: посилання 0:47-1:04 (розділювач: дефіс, тире або пробіл).\n"
                                  "Напр.: https://www.youtube.com/watch?v=DW2w97ccmMY 0:47-1:04",
                      font=("Segoe UI", 12), text_color=MUTED, justify="left").pack(anchor="w")
 
@@ -263,6 +269,11 @@ class App(ctk.CTk):
         self.bar = ctk.CTkProgressBar(binner, height=6, corner_radius=3, fg_color=INSET, progress_color=ACCENT)
         self.bar.pack(fill="x", pady=(8, 12))
         self.bar.set(0)
+        self.overwrite = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(binner, text="♻️ Перерізувати вже існуючі файли (без галочки — готові пропускаються)",
+                        variable=self.overwrite, font=("Segoe UI", 13), text_color=MUTED,
+                        fg_color=ACCENT, hover_color="#0066CC", checkbox_height=22,
+                        checkbox_width=22).pack(anchor="w", pady=(0, 10))
         self.go = ctk.CTkButton(binner, text="✂️ НАРІЗАТИ ФРАГМЕНТИ", height=52, corner_radius=26,
                                 font=("Segoe UI", 17, "bold"), fg_color=GREEN, hover_color="#28B14C",
                                 text_color="#000000", command=self.start)
@@ -287,6 +298,29 @@ class App(ctk.CTk):
             os.startfile(LOG_FILE)
         except Exception as e:
             messagebox.showerror(APP_TITLE, str(e))
+
+    def paste_list(self):
+        """Вставити список фрагментів з буфера обміну."""
+        try:
+            t = (self.clipboard_get() or "").strip()
+        except Exception:
+            t = ""
+        if not t:
+            self._journal("📋 Буфер обміну порожній — спочатку скопіюй список")
+            return
+        cur = self.source.get("1.0", "end").strip()
+        if cur:
+            self.source.insert("end", "\n" + t)
+        else:
+            self.source.insert("1.0", t)
+        self.source.see("end")
+        n = len([x for x in t.splitlines() if x.strip()])
+        self._journal("📋 Вставлено {} рядків списку".format(n))
+
+    def clear_list(self):
+        """Очистити поле списку."""
+        self.source.delete("1.0", "end")
+        self._journal("🗑 Список очищено")
 
     def copy_journal(self):
         """Копіювати весь журнал у буфер обміну."""
@@ -360,9 +394,16 @@ class App(ctk.CTk):
             ffp = ensure_ffmpeg(say)
             tools["ytdlp"] = ensure_ytdlp(say)
             tools["ffdir"] = os.path.dirname(ffp)
+            overwrite = self.overwrite.get()
+            skipped = 0
             for i, (url, t1, t2) in enumerate(items, 1):
                 num = "{:02d}".format(i)
                 out = os.path.join(OUT_DIR, num + ".mp4")
+                if os.path.isfile(out) and not overwrite:
+                    done_ok += 1
+                    skipped += 1
+                    say("✔️ {}.mp4 вже існує — пропускаю".format(num))
+                    continue
                 q.put(("stat", "● Наріжаю {}/{}…".format(i, total)))
                 say("▶️ Фрагмент {} з {}: {} ({}–{})".format(i, total, video_id(url), t1, t2))
                 ok = self._cut_one(say, tools, url, t1, t2, out, num)
@@ -375,15 +416,36 @@ class App(ctk.CTk):
         except Exception as e:
             say("❌ Помилка: {}".format(e))
         say("=== Готово: {} з {} ===".format(done_ok, total))
+        if skipped:
+            say("✔️ Пропущено як вже готові: {}".format(skipped))
         if failed:
             say("❌ Не вдалося: " + ", ".join(failed))
         q.put(("done", done_ok, total, failed))
 
     def _cut_one(self, say, tools, url, t1, t2, out, num):
-        """Нарізка одного фрагмента; True якщо файл готовий."""
+        """Нарізка одного фрагмента з автоповтором при збої; True якщо готовий."""
+        for attempt in (1, 2):
+            if attempt > 1:
+                say("🔁 {} — був збій, за 3 сек пробую ще раз…".format(num))
+                time.sleep(3)
+                for f in os.listdir(OUT_DIR):
+                    if f.startswith(num + "."):
+                        try:
+                            os.remove(os.path.join(OUT_DIR, f))
+                        except Exception:
+                            pass
+            if self._cut_try(say, tools, url, t1, t2, out, num):
+                return True
+        left = [f for f in os.listdir(OUT_DIR) if f.startswith(num + ".")]
+        if left:
+            say("⚠️ У папці лишився файл: " + ", ".join(left)[:200])
+        return False
+
+    def _cut_try(self, say, tools, url, t1, t2, out, num):
+        """Один підхід до нарізки фрагмента."""
         try:
             if os.path.exists(out):
-                say("♻️ {} вже є — перезаписую".format(num))
+                say("♻️ {} перерізую".format(num))
                 try:
                     os.remove(out)
                 except Exception:
@@ -418,9 +480,6 @@ class App(ctk.CTk):
             else:
                 for line in lines[-3:]:
                     say("ℹ️ " + line[:200])
-            left = [f for f in os.listdir(OUT_DIR) if f.startswith(num + ".")]
-            if left:
-                say("⚠️ У папці лишився файл: " + ", ".join(left)[:200])
             return False
         except Exception as e:
             say("❌ Помилка: {}".format(e))
