@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Fragment Cutter 1.1 — нарізка фрагмента з YouTube за таймкодами.
+"""Fragment Cutter 1.2 — нарізка фрагмента з YouTube за таймкодами.
 
 Один файл, нуль API-ключів: yt-dlp і ffmpeg завантажуються автоматично
 при першому використанні. Результати зберігаються у папці
 «Відео → Fragments» у профілю користувача. Стиль: CustomTkinter, iOS dark.
+Повний лог кожної нарізки — у файлі fragcut.log (для діагностики).
 """
 
 import os
@@ -22,10 +23,11 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 APP_TITLE = "Fragment Cutter"
-APP_VERSION = "1.1"
-UA_STRING = "FragmentCutter/1.1 (Windows)"
+APP_VERSION = "1.2"
+UA_STRING = "FragmentCutter/1.2 (Windows)"
 
 OUT_DIR = os.path.join(os.path.expanduser("~"), "Videos", "Fragments")
+LOG_FILE = os.path.join(OUT_DIR, "fragcut.log")
 
 _BASE = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
 TOOLS_DIR = os.path.join(_BASE, "tools")
@@ -107,9 +109,14 @@ def ensure_ffmpeg(say):
     return p
 
 
-def ensure_ytdlp(say):
+def ensure_ytdlp(say, force=False):
     """yt-dlp.exe з TOOLS_DIR, або завантажуємо (один раз)."""
     cand = os.path.join(TOOLS_DIR, "yt-dlp.exe")
+    if force and os.path.isfile(cand):
+        try:
+            os.remove(cand)
+        except Exception:
+            pass
     if os.path.isfile(cand) and os.path.getsize(cand) > 1000000:
         return cand
     say("⬇️ Завантажую yt-dlp (~18 МБ, тільки перший раз)…")
@@ -141,16 +148,31 @@ def video_id(url):
     return time.strftime("%Y%m%d_%H%M%S")
 
 
+def ytdlp_run(ytdlp, ffdir, url, t1, t2, out, extra):
+    """Один запуск yt-dlp на нарізку фрагмента."""
+    cmd = [
+        ytdlp,
+        "--ffmpeg-location", ffdir,
+        "--download-sections", "*{}-{}".format(t1, t2),
+        "--force-keyframes-at-cuts",
+        "-f", "bv*+ba/b",
+        "--no-playlist",
+        "--windows-filenames",
+        "-o", out,
+    ] + extra
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE + " " + APP_VERSION)
         self.configure(fg_color=BG)
-        w, h = 900, 620
+        w, h = 900, 640
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         self.geometry("{}x{}+{}+{}".format(w, h, max(0, (sw - w) // 2), max(0, (sh - h) // 2)))
-        self.minsize(840, 560)
+        self.minsize(840, 580)
 
         self.q = queue.Queue()
         self.running = False
@@ -217,6 +239,10 @@ class App(ctk.CTk):
         frow.pack(fill="x", pady=(10, 0))
         ctk.CTkButton(frow, text="📂 Папка результатів", height=34, corner_radius=17,
                       fg_color=INSET, hover_color=HOVER, command=self.open_out).pack(side="left")
+        ctk.CTkButton(frow, text="📋 Копіювати журнал", height=34, corner_radius=17,
+                      fg_color=INSET, hover_color=HOVER, command=self.copy_journal).pack(side="left", padx=(8, 0))
+        ctk.CTkButton(frow, text="📂 Лог-файл", height=34, corner_radius=17,
+                      fg_color=INSET, hover_color=HOVER, command=self.open_log).pack(side="left", padx=(8, 0))
         ctk.CTkLabel(frow, text="📁 " + OUT_DIR, font=("Segoe UI", 12), text_color=MUTED).pack(side="right")
 
         bottom = ctk.CTkFrame(self, fg_color=CARD, corner_radius=24)
@@ -255,11 +281,49 @@ class App(ctk.CTk):
         except Exception as e:
             messagebox.showerror(APP_TITLE, str(e))
 
+    def open_log(self):
+        try:
+            if not os.path.isfile(LOG_FILE):
+                messagebox.showinfo(APP_TITLE, "Лог-файл з'явиться після першої нарізки:\n" + LOG_FILE)
+                return
+            os.startfile(LOG_FILE)
+        except Exception as e:
+            messagebox.showerror(APP_TITLE, str(e))
+
+    def copy_journal(self):
+        """Копіювати весь журнал у буфер обміну."""
+        text = self.journal.get("1.0", "end").strip()
+        if not text:
+            self._journal("Журнал порожній")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._journal("📋 Журнал скопійовано — встав його у чат")
+
     def _journal(self, text):
         self.journal.configure(state="normal")
         self.journal.insert("end", text + "\n")
         self.journal.see("end")
         self.journal.configure(state="disabled")
+
+    def _say(self, text):
+        """Повідомлення в журнал (через чергу) + у лог-файл."""
+        self.q.put(("log", text))
+        try:
+            os.makedirs(OUT_DIR, exist_ok=True)
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(text + "\n")
+        except Exception:
+            pass
+
+    def _log_raw(self, text):
+        """Сирі деталі (повний вивід yt-dlp) — лише у лог-файл."""
+        try:
+            os.makedirs(OUT_DIR, exist_ok=True)
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(text + "\n")
+        except Exception:
+            pass
 
     def start(self):
         if self.running:
@@ -288,41 +352,47 @@ class App(ctk.CTk):
 
     def _worker(self, url, t1, t2, name):
         q = self.q
-
-        def say(t):
-            q.put(("log", t))
-
+        say = self._say
         ok = False
         out = os.path.join(OUT_DIR, name + ".mp4")
         try:
             os.makedirs(OUT_DIR, exist_ok=True)
+            say("=== Нарізка {} ({}–{}) ===".format(name, t1, t2))
             say("Перевіряю інструменти…")
             ffp = ensure_ffmpeg(say)
             ytdlp = ensure_ytdlp(say)
-            say("✂️ Нарізаю {} ({}–{})…".format(name, t1, t2))
             if os.path.exists(out):
                 try:
                     os.remove(out)
                 except Exception:
                     pass
-            cmd = [
-                ytdlp,
-                "--ffmpeg-location", os.path.dirname(ffp),
-                "--download-sections", "*{}-{}".format(t1, t2),
-                "--force-keyframes-at-cuts",
-                "-f", "bv*+ba/b",
-                "--no-playlist",
-                "--windows-filenames",
-                "-o", out,
-                url,
-            ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-            if proc.returncode == 0 and os.path.isfile(out):
+            proc = None
+            try:
+                proc = ytdlp_run(ytdlp, os.path.dirname(ffp), url, t1, t2, out, [])
+            except OSError:
+                say("❗ yt-dlp не запускається (ймовірно, антивірус його видалив) — завантажую заново…")
+                ytdlp = ensure_ytdlp(say, force=True)
+                proc = ytdlp_run(ytdlp, os.path.dirname(ffp), url, t1, t2, out, [])
+            if proc is not None and proc.returncode == 0 and os.path.isfile(out):
                 ok = True
                 say("✅ Готово: " + out)
-            else:
-                tail = (proc.stderr or proc.stdout or "").strip().splitlines()
-                say("❌ " + (tail[-1] if tail else "не вдалося завантажити фрагмент"))
+            elif proc is not None:
+                err = (proc.stderr or "") + "\n" + (proc.stdout or "")
+                self._log_raw("=== yt-dlp повний вивід ===\n" + err)
+                if "Sign in to confirm" in err or "not a bot" in err:
+                    say("🤖 YouTube просить підтвердження «не робот» — пробую інший спосіб…")
+                    proc2 = ytdlp_run(ytdlp, os.path.dirname(ffp), url, t1, t2, out,
+                                      ["--extractor-args", "youtube:player_client=tv"])
+                    if proc2.returncode == 0 and os.path.isfile(out):
+                        ok = True
+                        say("✅ Готово: " + out)
+                    else:
+                        err2 = (proc2.stderr or "") + "\n" + (proc2.stdout or "")
+                        self._log_raw("=== yt-dlp повторний вивід (player_client=tv) ===\n" + err2)
+                if not ok:
+                    tail = [x for x in err.strip().splitlines() if x.strip()][-3:]
+                    for line in tail:
+                        say("❌ " + line.strip()[:200])
         except Exception as e:
             say("❌ Помилка: {}".format(e))
         q.put(("done", ok, out))
@@ -342,7 +412,9 @@ class App(ctk.CTk):
                 pass
         else:
             self.status.configure(text="● Не вдалося нарізати", text_color="#FF453A")
-            messagebox.showerror(APP_TITLE, "Фрагмент не нарізано — подивіться журнал.")
+            messagebox.showerror(APP_TITLE,
+                                 "Фрагмент не нарізано.\nНатисни «📋 Копіювати журнал» "
+                                 "і надішли текст.\nПовні деталі у файлі:\n" + LOG_FILE)
 
     def _poll(self):
         try:
