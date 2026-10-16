@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Fragment Cutter 1.2 — нарізка фрагмента з YouTube за таймкодами.
+"""Fragment Cutter 1.3 — нарізка фрагмента з YouTube за таймкодами.
 
 Один файл, нуль API-ключів: yt-dlp і ffmpeg завантажуються автоматично
 при першому використанні. Результати зберігаються у папці
@@ -23,8 +23,8 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 APP_TITLE = "Fragment Cutter"
-APP_VERSION = "1.2"
-UA_STRING = "FragmentCutter/1.2 (Windows)"
+APP_VERSION = "1.3"
+UA_STRING = "FragmentCutter/1.3 (Windows)"
 
 OUT_DIR = os.path.join(os.path.expanduser("~"), "Videos", "Fragments")
 LOG_FILE = os.path.join(OUT_DIR, "fragcut.log")
@@ -159,7 +159,7 @@ def ytdlp_run(ytdlp, ffdir, url, t1, t2, out, extra):
         "--no-playlist",
         "--windows-filenames",
         "-o", out,
-    ] + extra
+    ] + extra + [url]
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
