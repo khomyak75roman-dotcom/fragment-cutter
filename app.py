@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Fragment Cutter 1.3 — нарізка фрагмента з YouTube за таймкодами.
+"""Fragment Cutter 2.0 — пакетна нарізка фрагментів з YouTube зі списку.
 
-Один файл, нуль API-ключів: yt-dlp і ffmpeg завантажуються автоматично
-при першому використанні. Результати зберігаються у папці
-«Відео → Fragments» у профілю користувача. Стиль: CustomTkinter, iOS dark.
-Повний лог кожної нарізки — у файлі fragcut.log (для діагностики).
+Одне вікно: вставляєш список (рядок = посилання + час, напр.
+«https://youtu.be/... 0:47-1:04») — програма послідовно нарізає всі
+фрагменти, підписує їх порядковими номерами (01.mp4, 02.mp4, …)
+і складає в папку «Відео → Fragments». Нуль API-ключів: yt-dlp і ffmpeg
+завантажуються автоматично при першому використанні.
+Стиль: CustomTkinter, iOS dark. Повний лог — у файлі fragcut.log.
 """
 
 import os
@@ -23,8 +25,8 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 APP_TITLE = "Fragment Cutter"
-APP_VERSION = "1.3"
-UA_STRING = "FragmentCutter/1.3 (Windows)"
+APP_VERSION = "2.0"
+UA_STRING = "FragmentCutter/2.0 (Windows)"
 
 OUT_DIR = os.path.join(os.path.expanduser("~"), "Videos", "Fragments")
 LOG_FILE = os.path.join(OUT_DIR, "fragcut.log")
@@ -141,11 +143,47 @@ def parse_time(s):
 
 
 def video_id(url):
-    """ID відео з посилання YouTube (для імені файлу)."""
+    """ID відео з посилання YouTube (для журналу)."""
     m = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})", url)
     if m:
         return m.group(1)
-    return time.strftime("%Y%m%d_%H%M%S")
+    return url[:40]
+
+
+def parse_list(text):
+    """Розбір вставленого списку. Рядок = URL + два часи.
+
+    «https://youtu.be/VIDEO_ID 0:47-1:04» → [("https://…", "0:47", "1:04")]
+    Розділювач часу: дефіс, тире або пробіл. Коментарі (#) і пусті
+    рядки ігноруються. Повертає (валідні, [(№рядка, причина), …]).
+    """
+    items = []
+    bad = []
+    for i, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.search(r"https?://\S+", line)
+        if not m:
+            bad.append((i, "немає посилання (https://…)"))
+            continue
+        url = m.group(0).rstrip(",;")
+        rest = line.replace(url, " ", 1)
+        times = re.findall(r"\d{1,2}(?::\d{2}){1,2}", rest)
+        if len(times) < 2:
+            bad.append((i, "потрібно два часи: «0:47-1:04» після посилання"))
+            continue
+        t1, t2 = times[0], times[1]
+        s1 = parse_time(t1)
+        s2 = parse_time(t2)
+        if s1 is None or s2 is None:
+            bad.append((i, "не зрозумів час «{}»".format(t1) if s1 is None else "не зрозумів час «{}»".format(t2)))
+            continue
+        if s2 <= s1:
+            bad.append((i, "початок {} має бути МЕНШИМ за кінець {}".format(t1, t2)))
+            continue
+        items.append((url, t1, t2))
+    return items, bad
 
 
 def ytdlp_run(ytdlp, ffdir, url, t1, t2, out, extra):
@@ -156,6 +194,7 @@ def ytdlp_run(ytdlp, ffdir, url, t1, t2, out, extra):
         "--download-sections", "*{}-{}".format(t1, t2),
         "--force-keyframes-at-cuts",
         "-f", "bv*+ba/b",
+        "--merge-output-format", "mp4",
         "--no-playlist",
         "--windows-filenames",
         "-o", out,
@@ -168,18 +207,14 @@ class App(ctk.CTk):
         super().__init__()
         self.title(APP_TITLE + " " + APP_VERSION)
         self.configure(fg_color=BG)
-        w, h = 900, 640
+        w, h = 920, 780
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         self.geometry("{}x{}+{}+{}".format(w, h, max(0, (sw - w) // 2), max(0, (sh - h) // 2)))
-        self.minsize(840, 580)
+        self.minsize(860, 700)
 
         self.q = queue.Queue()
         self.running = False
-
-        self.url = ctk.StringVar()
-        self.t1 = ctk.StringVar()
-        self.t2 = ctk.StringVar()
 
         self._build()
         self.after(120, self._poll)
@@ -189,51 +224,24 @@ class App(ctk.CTk):
         head = ctk.CTkFrame(self, fg_color="transparent")
         head.pack(fill="x", padx=28, pady=(24, 4))
         ctk.CTkLabel(head, text="✂️ Fragment Cutter", font=("Segoe UI", 26, "bold"), text_color=TEXT).pack(anchor="w")
-        ctk.CTkLabel(head, text="Нарізка фрагмента з YouTube за таймкодами • без API-ключів",
+        ctk.CTkLabel(head, text="Список фрагментів у одному вікні • один рядок = один фрагмент • без API-ключів",
                      font=("Segoe UI", 13), text_color=MUTED).pack(anchor="w")
 
         card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=24)
-        card.pack(fill="x", padx=28, pady=(14, 0))
+        card.pack(fill="both", expand=True, padx=28, pady=(14, 0))
         inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="x", padx=22, pady=18)
+        inner.pack(fill="both", expand=True, padx=22, pady=18)
 
-        ctk.CTkLabel(inner, text="🔗 Посилання на відео YouTube", font=("Segoe UI", 15, "bold"),
-                     text_color=TEXT).pack(anchor="w")
-        row_url = ctk.CTkFrame(inner, fg_color="transparent")
-        row_url.pack(fill="x", pady=(6, 12))
-        e_url = ctk.CTkEntry(row_url, textvariable=self.url, height=44, corner_radius=12,
-                             fg_color=INSET, border_color=SEP, font=("Segoe UI", 14))
-        e_url.pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(row_url, text="📋", width=52, height=44, corner_radius=12, fg_color=INSET,
-                      hover_color=HOVER, command=lambda: self._paste(self.url)).pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(inner, text="📋 Список фрагментів (встав сюди)",
+                     font=("Segoe UI", 15, "bold"), text_color=TEXT).pack(anchor="w")
+        self.source = ctk.CTkTextbox(inner, height=180, corner_radius=12, fg_color=INSET,
+                                     font=("Consolas", 13), text_color=TEXT)
+        self.source.pack(fill="both", expand=True, pady=(6, 8))
 
-        row_time = ctk.CTkFrame(inner, fg_color="transparent")
-        row_time.pack(fill="x")
-        col1 = ctk.CTkFrame(row_time, fg_color="transparent")
-        col1.pack(side="left", fill="both", expand=True)
-        ctk.CTkLabel(col1, text="⏱ Час початку (MM:SS)", font=("Segoe UI", 15, "bold"),
-                     text_color=TEXT).pack(anchor="w")
-        r1 = ctk.CTkFrame(col1, fg_color="transparent")
-        r1.pack(fill="x", pady=(6, 0))
-        e1 = ctk.CTkEntry(r1, textvariable=self.t1, height=44, corner_radius=12,
-                          fg_color=INSET, border_color=SEP, justify="center", font=("Segoe UI", 14))
-        e1.pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(r1, text="📋", width=52, height=44, corner_radius=12, fg_color=INSET,
-                      hover_color=HOVER, command=lambda: self._paste(self.t1)).pack(side="left", padx=(8, 0))
-        col2 = ctk.CTkFrame(row_time, fg_color="transparent")
-        col2.pack(side="left", fill="both", expand=True, padx=(14, 0))
-        ctk.CTkLabel(col2, text="🏁 Час завершення (MM:SS)", font=("Segoe UI", 15, "bold"),
-                     text_color=TEXT).pack(anchor="w")
-        r2 = ctk.CTkFrame(col2, fg_color="transparent")
-        r2.pack(fill="x", pady=(6, 0))
-        e2 = ctk.CTkEntry(r2, textvariable=self.t2, height=44, corner_radius=12,
-                          fg_color=INSET, border_color=SEP, justify="center", font=("Segoe UI", 14))
-        e2.pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(r2, text="📋", width=52, height=44, corner_radius=12, fg_color=INSET,
-                      hover_color=HOVER, command=lambda: self._paste(self.t2)).pack(side="left", padx=(8, 0))
-
-        ctk.CTkLabel(inner, text="Формат часу: MM:SS або H:MM:SS • Ctrl+Enter = нарізати",
-                     font=("Segoe UI", 12), text_color=MUTED).pack(anchor="w", pady=(10, 0))
+        ctk.CTkLabel(inner, text="Один рядок = один фрагмент: посилання 0:47-1:04\n"
+                                 "Розділювач часу: дефіс, тире або пробіл • рядки з # ігноруються • Ctrl+Enter = нарізати\n"
+                                 "Напр.: https://www.youtube.com/watch?v=DW2w97ccmMY 0:47-1:04",
+                     font=("Segoe UI", 12), text_color=MUTED, justify="left").pack(anchor="w")
 
         frow = ctk.CTkFrame(inner, fg_color="transparent")
         frow.pack(fill="x", pady=(10, 0))
@@ -255,24 +263,14 @@ class App(ctk.CTk):
         self.bar = ctk.CTkProgressBar(binner, height=6, corner_radius=3, fg_color=INSET, progress_color=ACCENT)
         self.bar.pack(fill="x", pady=(8, 12))
         self.bar.set(0)
-        self.go = ctk.CTkButton(binner, text="✂️ НАРІЗАТИ ФРАГМЕНТ", height=52, corner_radius=26,
+        self.go = ctk.CTkButton(binner, text="✂️ НАРІЗАТИ ФРАГМЕНТИ", height=52, corner_radius=26,
                                 font=("Segoe UI", 17, "bold"), fg_color=GREEN, hover_color="#28B14C",
                                 text_color="#000000", command=self.start)
         self.go.pack(fill="x")
 
-        self.journal = ctk.CTkTextbox(self, height=150, fg_color=CARD, corner_radius=16, font=("Consolas", 12))
+        self.journal = ctk.CTkTextbox(self, height=160, fg_color=CARD, corner_radius=16, font=("Consolas", 12))
         self.journal.pack(fill="x", padx=28, pady=(14, 24))
         self.journal.configure(state="disabled")
-
-    def _paste(self, var):
-        """Вставка з буфера обміну у поле."""
-        try:
-            t = self.clipboard_get()
-        except Exception:
-            self._journal("📋 Буфер обміну порожній")
-            return
-        var.set(t.strip())
-        self._journal("📋 Вставлено: " + t.strip())
 
     def open_out(self):
         os.makedirs(OUT_DIR, exist_ok=True)
@@ -328,84 +326,124 @@ class App(ctk.CTk):
     def start(self):
         if self.running:
             return
-        url = self.url.get().strip()
-        t1 = self.t1.get().strip()
-        t2 = self.t2.get().strip()
-        if not url:
-            messagebox.showwarning(APP_TITLE, "Встав посилання на відео YouTube.")
+        raw = self.source.get("1.0", "end").strip()
+        if not raw:
+            messagebox.showwarning(APP_TITLE, "Встав список фрагментів.\nОдин рядок: посилання 0:47-1:04")
             return
-        if not url.lower().startswith("http"):
-            messagebox.showwarning(APP_TITLE, "Посилання має починатися з http")
+        items, bad = parse_list(raw)
+        for ln, why in bad[:6]:
+            self._journal("⚠️ Рядок {}: {}".format(ln, why))
+        if bad:
+            self._journal("⚠️ Хибних рядків: {} — їх пропущено".format(len(bad)))
+        if not items:
+            messagebox.showwarning(APP_TITLE, "Не знайшов жодного валідного фрагмента.\n\n"
+                                             "Приклад рядка:\nhttps://youtu.be/VIDEO_ID 0:47-1:04")
             return
-        s1 = parse_time(t1)
-        s2 = parse_time(t2)
-        if s1 is None or s2 is None or s2 <= s1:
-            messagebox.showwarning(APP_TITLE, "Перевір час: Початок < Кінець, формат MM:SS.")
-            return
-        name = "frag_{}_{}-{}".format(video_id(url), t1.replace(":", "-"), t2.replace(":", "-"))
         self.running = True
         self.go.configure(state="disabled")
-        self.status.configure(text="● Нарізаю…", text_color="#F59E0B")
+        self.status.configure(text="● Наріжаю 1/{}…".format(len(items)), text_color="#F59E0B")
         self.bar.configure(mode="indeterminate")
         self.bar.start()
-        threading.Thread(target=self._worker, args=(url, t1, t2, name), daemon=True).start()
+        self._journal("📋 До нарізки: {} фрагментів".format(len(items)))
+        threading.Thread(target=self._worker, args=(items,), daemon=True).start()
 
-    def _worker(self, url, t1, t2, name):
+    def _worker(self, items):
         q = self.q
         say = self._say
-        ok = False
-        out = os.path.join(OUT_DIR, name + ".mp4")
+        total = len(items)
+        done_ok = 0
+        failed = []
+        tools = {}
         try:
             os.makedirs(OUT_DIR, exist_ok=True)
-            say("=== Нарізка {} ({}–{}) ===".format(name, t1, t2))
             say("Перевіряю інструменти…")
             ffp = ensure_ffmpeg(say)
-            ytdlp = ensure_ytdlp(say)
+            tools["ytdlp"] = ensure_ytdlp(say)
+            tools["ffdir"] = os.path.dirname(ffp)
+            for i, (url, t1, t2) in enumerate(items, 1):
+                num = "{:02d}".format(i)
+                out = os.path.join(OUT_DIR, num + ".mp4")
+                q.put(("stat", "● Наріжаю {}/{}…".format(i, total)))
+                say("▶️ Фрагмент {} з {}: {} ({}–{})".format(i, total, video_id(url), t1, t2))
+                ok = self._cut_one(say, tools, url, t1, t2, out, num)
+                if ok:
+                    done_ok += 1
+                    say("✅ Готово: {}.mp4".format(num))
+                else:
+                    failed.append(num)
+                    say("⏭️ Далі…")
+        except Exception as e:
+            say("❌ Помилка: {}".format(e))
+        say("=== Готово: {} з {} ===".format(done_ok, total))
+        if failed:
+            say("❌ Не вдалося: " + ", ".join(failed))
+        q.put(("done", done_ok, total, failed))
+
+    def _cut_one(self, say, tools, url, t1, t2, out, num):
+        """Нарізка одного фрагмента; True якщо файл готовий."""
+        try:
             if os.path.exists(out):
+                say("♻️ {} вже є — перезаписую".format(num))
                 try:
                     os.remove(out)
                 except Exception:
                     pass
-            proc = None
             try:
-                proc = ytdlp_run(ytdlp, os.path.dirname(ffp), url, t1, t2, out, [])
+                proc = ytdlp_run(tools["ytdlp"], tools["ffdir"], url, t1, t2, out, [])
             except OSError:
                 say("❗ yt-dlp не запускається (ймовірно, антивірус його видалив) — завантажую заново…")
-                ytdlp = ensure_ytdlp(say, force=True)
-                proc = ytdlp_run(ytdlp, os.path.dirname(ffp), url, t1, t2, out, [])
-            if proc is not None and proc.returncode == 0 and os.path.isfile(out):
-                ok = True
-                say("✅ Готово: " + out)
-            elif proc is not None:
-                err = (proc.stderr or "") + "\n" + (proc.stdout or "")
-                self._log_raw("=== yt-dlp повний вивід ===\n" + err)
-                if "Sign in to confirm" in err or "not a bot" in err:
-                    say("🤖 YouTube просить підтвердження «не робот» — пробую інший спосіб…")
-                    proc2 = ytdlp_run(ytdlp, os.path.dirname(ffp), url, t1, t2, out,
-                                      ["--extractor-args", "youtube:player_client=tv"])
-                    if proc2.returncode == 0 and os.path.isfile(out):
-                        ok = True
-                        say("✅ Готово: " + out)
-                    else:
-                        err2 = (proc2.stderr or "") + "\n" + (proc2.stdout or "")
-                        self._log_raw("=== yt-dlp повторний вивід (player_client=tv) ===\n" + err2)
-                if not ok:
-                    tail = [x for x in err.strip().splitlines() if x.strip()][-3:]
-                    for line in tail:
-                        say("❌ " + line.strip()[:200])
+                tools["ytdlp"] = ensure_ytdlp(say, force=True)
+                proc = ytdlp_run(tools["ytdlp"], tools["ffdir"], url, t1, t2, out, [])
+            if proc is None:
+                say("❌ yt-dlp не запустився")
+                return False
+            if proc.returncode == 0 and os.path.isfile(out):
+                return True
+            err = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            self._log_raw("=== [{}] yt-dlp повний вивід ===\n{}".format(num, err))
+            if "Sign in to confirm" in err or "not a bot" in err:
+                say("🤖 YouTube просить підтвердження «не робот» — пробую інший спосіб…")
+                proc2 = ytdlp_run(tools["ytdlp"], tools["ffdir"], url, t1, t2, out,
+                                  ["--extractor-args", "youtube:player_client=tv"])
+                if proc2.returncode == 0 and os.path.isfile(out):
+                    return True
+                err2 = (proc2.stdout or "") + "\n" + (proc2.stderr or "")
+                self._log_raw("=== [{}] повторний вивід (player_client=tv) ===\n{}".format(num, err2))
+                err = err + "\n" + err2
+            lines = [x.strip() for x in err.splitlines() if x.strip()]
+            errs = [x for x in lines if x.startswith("ERROR")][:3]
+            if errs:
+                for line in errs:
+                    say("❌ " + line[:200])
+            else:
+                for line in lines[-3:]:
+                    say("ℹ️ " + line[:200])
+            left = [f for f in os.listdir(OUT_DIR) if f.startswith(num + ".")]
+            if left:
+                say("⚠️ У папці лишився файл: " + ", ".join(left)[:200])
+            return False
         except Exception as e:
             say("❌ Помилка: {}".format(e))
-        q.put(("done", ok, out))
+            return False
 
-    def _finish(self, ok, out):
+    def _finish(self, done_ok, total, failed):
         self.running = False
         self.bar.stop()
         self.bar.configure(mode="determinate")
-        self.bar.set(1 if ok else 0)
+        self.bar.set(done_ok / total if total else 0)
         self.go.configure(state="normal")
-        if ok:
-            self.status.configure(text="● Готово", text_color=GREEN)
-            messagebox.showinfo(APP_TITLE, "Фрагмент нарізано.\nПапку відкрито.")
+        if not failed:
+            self.status.configure(text="● Готово: {} з {}".format(done_ok, total), text_color=GREEN)
+            messagebox.showinfo(APP_TITLE, "Нарізано {} з {} фрагментів.\nПапку відкрито.".format(done_ok, total))
+            try:
+                os.startfile(OUT_DIR)
+            except Exception:
+                pass
+        elif done_ok:
+            self.status.configure(text="● Готово: {} з {} (не вдалися: {})".format(done_ok, total, ", ".join(failed)),
+                                  text_color="#F59E0B")
+            messagebox.showwarning(APP_TITLE, "Нарізано {} з {}.\nНе вдалося: {}.\n\n"
+                                           "Натисни «📋 Копіювати журнал» і надішли текст.".format(done_ok, total, ", ".join(failed)))
             try:
                 os.startfile(OUT_DIR)
             except Exception:
@@ -413,7 +451,7 @@ class App(ctk.CTk):
         else:
             self.status.configure(text="● Не вдалося нарізати", text_color="#FF453A")
             messagebox.showerror(APP_TITLE,
-                                 "Фрагмент не нарізано.\nНатисни «📋 Копіювати журнал» "
+                                 "Фрагменти не нарізано.\nНатисни «📋 Копіювати журнал» "
                                  "і надішли текст.\nПовні деталі у файлі:\n" + LOG_FILE)
 
     def _poll(self):
@@ -422,8 +460,10 @@ class App(ctk.CTk):
                 msg = self.q.get_nowait()
                 if msg[0] == "log":
                     self._journal(msg[1])
+                elif msg[0] == "stat":
+                    self.status.configure(text=msg[1], text_color="#F59E0B")
                 elif msg[0] == "done":
-                    self._finish(msg[1], msg[2])
+                    self._finish(msg[1], msg[2], msg[3])
         except queue.Empty:
             pass
         self.after(120, self._poll)
