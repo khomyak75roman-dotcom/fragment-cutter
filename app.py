@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Fragment Cutter 1.0 — нарізка фрагментів з YouTube за таймкодами.
+"""Fragment Cutter 1.1 — нарізка фрагмента з YouTube за таймкодами.
 
 Один файл, нуль API-ключів: yt-dlp і ffmpeg завантажуються автоматично
 при першому використанні. Результати зберігаються у папці
@@ -9,6 +9,7 @@
 import os
 import re
 import sys
+import time
 import queue
 import shutil
 import zipfile
@@ -21,8 +22,8 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 APP_TITLE = "Fragment Cutter"
-APP_VERSION = "1.0"
-UA_STRING = "FragmentCutter/1.0 (Windows)"
+APP_VERSION = "1.1"
+UA_STRING = "FragmentCutter/1.1 (Windows)"
 
 OUT_DIR = os.path.join(os.path.expanduser("~"), "Videos", "Fragments")
 
@@ -48,12 +49,6 @@ TEXT = "#F5F5F7"
 
 FF_ZIP_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
 YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-
-DEFAULT_FRAGMENTS = [
-    ("https://www.youtube.com/watch?v=DW2w97ccmMY", "0:47", "1:04", "clip1_powerbank_gabarity"),
-    ("https://www.youtube.com/watch?v=A881JRCGc7c", "0:20", "0:34", "clip2_korobka_100W"),
-    ("https://www.youtube.com/watch?v=Xnfu0MpIStE", "1:56", "2:10", "clip3_baseus_noutbuky"),
-]
 
 
 def download_file(url, dest, say):
@@ -138,36 +133,12 @@ def parse_time(s):
     return sec
 
 
-def sanitize_name(s, fallback):
-    """Ім'я файлу без сторонніх символів."""
-    s = re.sub(r"[^\w\-. ]", "_", (s or "").strip())
-    return s or fallback
-
-
-def cut_fragment(ytdlp, ffdir, it, say):
-    """Нарізати один фрагмент через yt-dlp --download-sections."""
-    out = os.path.join(OUT_DIR, it["name"] + ".mp4")
-    if os.path.exists(out):
-        try:
-            os.remove(out)
-        except Exception:
-            pass
-    cmd = [
-        ytdlp,
-        "--ffmpeg-location", ffdir,
-        "--download-sections", "*{}-{}".format(it["start"], it["end"]),
-        "--force-keyframes-at-cuts",
-        "-f", "bv*+ba/b",
-        "--no-playlist",
-        "--windows-filenames",
-        "-o", out,
-        it["url"],
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if proc.returncode != 0 or not os.path.isfile(out):
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
-        raise RuntimeError(tail[-1] if tail else "не вдалося завантажити фрагмент")
-    say("✅ Готово: " + out)
+def video_id(url):
+    """ID відео з посилання YouTube (для імені файлу)."""
+    m = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})", url)
+    if m:
+        return m.group(1)
+    return time.strftime("%Y%m%d_%H%M%S")
 
 
 class App(ctk.CTk):
@@ -175,19 +146,20 @@ class App(ctk.CTk):
         super().__init__()
         self.title(APP_TITLE + " " + APP_VERSION)
         self.configure(fg_color=BG)
-        w, h = 960, 700
+        w, h = 900, 620
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         self.geometry("{}x{}+{}+{}".format(w, h, max(0, (sw - w) // 2), max(0, (sh - h) // 2)))
-        self.minsize(880, 620)
+        self.minsize(840, 560)
 
         self.q = queue.Queue()
-        self.rows = []
         self.running = False
 
+        self.url = ctk.StringVar()
+        self.t1 = ctk.StringVar()
+        self.t2 = ctk.StringVar()
+
         self._build()
-        for url, t1, t2, name in DEFAULT_FRAGMENTS:
-            self.add_fragment(url, t1, t2, name)
         self.after(120, self._poll)
         self.bind("<Control-Return>", lambda e: self.start())
 
@@ -195,49 +167,69 @@ class App(ctk.CTk):
         head = ctk.CTkFrame(self, fg_color="transparent")
         head.pack(fill="x", padx=28, pady=(24, 4))
         ctk.CTkLabel(head, text="✂️ Fragment Cutter", font=("Segoe UI", 26, "bold"), text_color=TEXT).pack(anchor="w")
-        ctk.CTkLabel(head, text="Нарізка фрагментів з YouTube за таймкодами • без API-ключів",
+        ctk.CTkLabel(head, text="Нарізка фрагмента з YouTube за таймкодами • без API-ключів",
                      font=("Segoe UI", 13), text_color=MUTED).pack(anchor="w")
 
         card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=24)
-        card.pack(fill="both", expand=True, padx=28, pady=(14, 0))
+        card.pack(fill="x", padx=28, pady=(14, 0))
         inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="both", expand=True, padx=20, pady=16)
+        inner.pack(fill="x", padx=22, pady=18)
 
-        ctk.CTkLabel(inner, text="🔗 Фрагменти", font=("Segoe UI", 17, "bold"), text_color=TEXT).pack(anchor="w")
-        ctk.CTkLabel(inner, text="Час у форматі MM:SS або H:MM:SS • Ctrl+Enter = нарізати",
-                     font=("Segoe UI", 12), text_color=MUTED).pack(anchor="w")
+        ctk.CTkLabel(inner, text="🔗 Посилання на відео YouTube", font=("Segoe UI", 15, "bold"),
+                     text_color=TEXT).pack(anchor="w")
+        row_url = ctk.CTkFrame(inner, fg_color="transparent")
+        row_url.pack(fill="x", pady=(6, 12))
+        e_url = ctk.CTkEntry(row_url, textvariable=self.url, height=44, corner_radius=12,
+                             fg_color=INSET, border_color=SEP, font=("Segoe UI", 14))
+        e_url.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(row_url, text="📋", width=52, height=44, corner_radius=12, fg_color=INSET,
+                      hover_color=HOVER, command=lambda: self._paste(self.url)).pack(side="left", padx=(8, 0))
 
-        self.list_wrap = ctk.CTkScrollableFrame(inner, fg_color="transparent", height=290)
-        self.list_wrap.pack(fill="x", pady=(10, 0))
+        row_time = ctk.CTkFrame(inner, fg_color="transparent")
+        row_time.pack(fill="x")
+        col1 = ctk.CTkFrame(row_time, fg_color="transparent")
+        col1.pack(side="left", fill="both", expand=True)
+        ctk.CTkLabel(col1, text="⏱ Час початку (MM:SS)", font=("Segoe UI", 15, "bold"),
+                     text_color=TEXT).pack(anchor="w")
+        r1 = ctk.CTkFrame(col1, fg_color="transparent")
+        r1.pack(fill="x", pady=(6, 0))
+        e1 = ctk.CTkEntry(r1, textvariable=self.t1, height=44, corner_radius=12,
+                          fg_color=INSET, border_color=SEP, justify="center", font=("Segoe UI", 14))
+        e1.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(r1, text="📋", width=52, height=44, corner_radius=12, fg_color=INSET,
+                      hover_color=HOVER, command=lambda: self._paste(self.t1)).pack(side="left", padx=(8, 0))
+        col2 = ctk.CTkFrame(row_time, fg_color="transparent")
+        col2.pack(side="left", fill="both", expand=True, padx=(14, 0))
+        ctk.CTkLabel(col2, text="🏁 Час завершення (MM:SS)", font=("Segoe UI", 15, "bold"),
+                     text_color=TEXT).pack(anchor="w")
+        r2 = ctk.CTkFrame(col2, fg_color="transparent")
+        r2.pack(fill="x", pady=(6, 0))
+        e2 = ctk.CTkEntry(r2, textvariable=self.t2, height=44, corner_radius=12,
+                          fg_color=INSET, border_color=SEP, justify="center", font=("Segoe UI", 14))
+        e2.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(r2, text="📋", width=52, height=44, corner_radius=12, fg_color=INSET,
+                      hover_color=HOVER, command=lambda: self._paste(self.t2)).pack(side="left", padx=(8, 0))
 
-        hdr = ctk.CTkFrame(self.list_wrap, fg_color="transparent")
-        hdr.pack(fill="x")
-        for col, txt in enumerate(("Посилання YouTube", "Початок", "Кінець", "Ім'я файлу", "")):
-            lab = ctk.CTkLabel(hdr, text=txt, font=("Segoe UI", 12, "bold"), text_color=MUTED, anchor="w")
-            lab.grid(row=0, column=col, padx=6, sticky="w")
+        ctk.CTkLabel(inner, text="Формат часу: MM:SS або H:MM:SS • Ctrl+Enter = нарізати",
+                     font=("Segoe UI", 12), text_color=MUTED).pack(anchor="w", pady=(10, 0))
 
-        btns = ctk.CTkFrame(inner, fg_color="transparent")
-        btns.pack(fill="x", pady=(12, 0))
-        ctk.CTkButton(btns, text="➕ Додати фрагмент", height=36, corner_radius=18,
-                      fg_color=INSET, hover_color=HOVER,
-                      command=lambda: self.add_fragment()).pack(side="left")
-        ctk.CTkButton(btns, text="📂 Папка результатів", height=36, corner_radius=18,
-                      fg_color=INSET, hover_color=HOVER,
-                      command=self.open_out).pack(side="left", padx=(8, 0))
-        self.out_lbl = ctk.CTkLabel(btns, text="📁 " + OUT_DIR, font=("Segoe UI", 12), text_color=MUTED)
-        self.out_lbl.pack(side="right")
+        frow = ctk.CTkFrame(inner, fg_color="transparent")
+        frow.pack(fill="x", pady=(10, 0))
+        ctk.CTkButton(frow, text="📂 Папка результатів", height=34, corner_radius=17,
+                      fg_color=INSET, hover_color=HOVER, command=self.open_out).pack(side="left")
+        ctk.CTkLabel(frow, text="📁 " + OUT_DIR, font=("Segoe UI", 12), text_color=MUTED).pack(side="right")
 
         bottom = ctk.CTkFrame(self, fg_color=CARD, corner_radius=24)
         bottom.pack(fill="x", padx=28, pady=(14, 0))
         binner = ctk.CTkFrame(bottom, fg_color="transparent")
-        binner.pack(fill="x", padx=20, pady=14)
+        binner.pack(fill="x", padx=22, pady=16)
 
         self.status = ctk.CTkLabel(binner, text="Готово до нарізки", font=("Segoe UI", 13), text_color=MUTED)
         self.status.pack(anchor="w")
         self.bar = ctk.CTkProgressBar(binner, height=6, corner_radius=3, fg_color=INSET, progress_color=ACCENT)
         self.bar.pack(fill="x", pady=(8, 12))
         self.bar.set(0)
-        self.go = ctk.CTkButton(binner, text="✂️ НАРІЗАТИ ВСЕ", height=52, corner_radius=26,
+        self.go = ctk.CTkButton(binner, text="✂️ НАРІЗАТИ ФРАГМЕНТ", height=52, corner_radius=26,
                                 font=("Segoe UI", 17, "bold"), fg_color=GREEN, hover_color="#28B14C",
                                 text_color="#000000", command=self.start)
         self.go.pack(fill="x")
@@ -246,32 +238,15 @@ class App(ctk.CTk):
         self.journal.pack(fill="x", padx=28, pady=(14, 24))
         self.journal.configure(state="disabled")
 
-    def add_fragment(self, url="", t1="", t2="", name=""):
-        row = ctk.CTkFrame(self.list_wrap, fg_color=INSET, corner_radius=12)
-        row.pack(fill="x", pady=4, ipady=2)
-        u = ctk.StringVar(value=url)
-        a = ctk.StringVar(value=t1)
-        b = ctk.StringVar(value=t2)
-        n = ctk.StringVar(value=name)
-        e1 = ctk.CTkEntry(row, textvariable=u, height=34, corner_radius=10, fg_color=BG, border_color=SEP)
-        e1.grid(row=0, column=0, padx=6, pady=6, sticky="ew")
-        e2 = ctk.CTkEntry(row, textvariable=a, width=64, height=34, corner_radius=10, fg_color=BG,
-                          border_color=SEP, justify="center")
-        e2.grid(row=0, column=1, padx=6, pady=6)
-        e3 = ctk.CTkEntry(row, textvariable=b, width=64, height=34, corner_radius=10, fg_color=BG,
-                          border_color=SEP, justify="center")
-        e3.grid(row=0, column=2, padx=6, pady=6)
-        e4 = ctk.CTkEntry(row, textvariable=n, width=170, height=34, corner_radius=10, fg_color=BG, border_color=SEP)
-        e4.grid(row=0, column=3, padx=6, pady=6)
-        btn = ctk.CTkButton(row, text="✕", width=36, height=34, fg_color="transparent",
-                            hover_color=HOVER, text_color=MUTED, command=lambda: self._del_row(row))
-        btn.grid(row=0, column=4, padx=6, pady=6)
-        row.grid_columnconfigure(0, weight=1)
-        self.rows.append({"frame": row, "url": u, "start": a, "end": b, "name": n})
-
-    def _del_row(self, row):
-        row.destroy()
-        self.rows = [x for x in self.rows if x["frame"] is not row]
+    def _paste(self, var):
+        """Вставка з буфера обміну у поле."""
+        try:
+            t = self.clipboard_get()
+        except Exception:
+            self._journal("📋 Буфер обміну порожній")
+            return
+        var.set(t.strip())
+        self._journal("📋 Вставлено: " + t.strip())
 
     def open_out(self):
         os.makedirs(OUT_DIR, exist_ok=True)
@@ -289,74 +264,85 @@ class App(ctk.CTk):
     def start(self):
         if self.running:
             return
-        items = []
-        for i, r in enumerate(self.rows, 1):
-            url = r["url"].get().strip()
-            t1 = r["start"].get().strip()
-            t2 = r["end"].get().strip()
-            name = sanitize_name(r["name"].get(), "frag{:02d}".format(i))
-            if not url:
-                continue
-            if not url.lower().startswith("http"):
-                messagebox.showwarning(APP_TITLE, "Рядок {}: посилання має починатися з http".format(i))
-                return
-            s1 = parse_time(t1)
-            s2 = parse_time(t2)
-            if s1 is None or s2 is None or s2 <= s1:
-                messagebox.showwarning(APP_TITLE, "Рядок {}: перевір час (Початок < Кінець, формат MM:SS).".format(i))
-                return
-            items.append({"url": url, "start": t1, "end": t2, "name": name})
-        if not items:
-            messagebox.showwarning(APP_TITLE, "Додай хоча б один фрагмент з посиланням.")
+        url = self.url.get().strip()
+        t1 = self.t1.get().strip()
+        t2 = self.t2.get().strip()
+        if not url:
+            messagebox.showwarning(APP_TITLE, "Встав посилання на відео YouTube.")
             return
+        if not url.lower().startswith("http"):
+            messagebox.showwarning(APP_TITLE, "Посилання має починатися з http")
+            return
+        s1 = parse_time(t1)
+        s2 = parse_time(t2)
+        if s1 is None or s2 is None or s2 <= s1:
+            messagebox.showwarning(APP_TITLE, "Перевір час: Початок < Кінець, формат MM:SS.")
+            return
+        name = "frag_{}_{}-{}".format(video_id(url), t1.replace(":", "-"), t2.replace(":", "-"))
         self.running = True
         self.go.configure(state="disabled")
         self.status.configure(text="● Нарізаю…", text_color="#F59E0B")
         self.bar.configure(mode="indeterminate")
         self.bar.start()
-        threading.Thread(target=self._worker, args=(items,), daemon=True).start()
+        threading.Thread(target=self._worker, args=(url, t1, t2, name), daemon=True).start()
 
-    def _worker(self, items):
+    def _worker(self, url, t1, t2, name):
         q = self.q
 
         def say(t):
             q.put(("log", t))
 
-        ok = 0
+        ok = False
+        out = os.path.join(OUT_DIR, name + ".mp4")
         try:
             os.makedirs(OUT_DIR, exist_ok=True)
             say("Перевіряю інструменти…")
             ffp = ensure_ffmpeg(say)
             ytdlp = ensure_ytdlp(say)
-            for idx, it in enumerate(items, 1):
-                say("[{}/{}] ✂️ {} ({}–{})…".format(idx, len(items), it["name"], it["start"], it["end"]))
+            say("✂️ Нарізаю {} ({}–{})…".format(name, t1, t2))
+            if os.path.exists(out):
                 try:
-                    cut_fragment(ytdlp, os.path.dirname(ffp), it, say)
-                    ok += 1
-                except Exception as e:
-                    msg = str(e).strip()
-                    last = msg.splitlines()[-1] if msg else "невідома помилка"
-                    say("❌ {}: {}".format(it["name"], last))
+                    os.remove(out)
+                except Exception:
+                    pass
+            cmd = [
+                ytdlp,
+                "--ffmpeg-location", os.path.dirname(ffp),
+                "--download-sections", "*{}-{}".format(t1, t2),
+                "--force-keyframes-at-cuts",
+                "-f", "bv*+ba/b",
+                "--no-playlist",
+                "--windows-filenames",
+                "-o", out,
+                url,
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if proc.returncode == 0 and os.path.isfile(out):
+                ok = True
+                say("✅ Готово: " + out)
+            else:
+                tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+                say("❌ " + (tail[-1] if tail else "не вдалося завантажити фрагмент"))
         except Exception as e:
-            say("❌ Помилка підготовки: {}".format(e))
-        q.put(("done", ok, len(items)))
+            say("❌ Помилка: {}".format(e))
+        q.put(("done", ok, out))
 
-    def _finish(self, ok, total):
+    def _finish(self, ok, out):
         self.running = False
         self.bar.stop()
         self.bar.configure(mode="determinate")
         self.bar.set(1 if ok else 0)
         self.go.configure(state="normal")
         if ok:
-            self.status.configure(text="● Готово: {}/{} фрагментів".format(ok, total), text_color=GREEN)
-            messagebox.showinfo(APP_TITLE, "Нарізано {} з {} фрагментів.\nПапку відкрито.".format(ok, total))
+            self.status.configure(text="● Готово", text_color=GREEN)
+            messagebox.showinfo(APP_TITLE, "Фрагмент нарізано.\nПапку відкрито.")
             try:
                 os.startfile(OUT_DIR)
             except Exception:
                 pass
         else:
-            self.status.configure(text="● Не вдалося нарізати жодного фрагмента", text_color="#FF453A")
-            messagebox.showerror(APP_TITLE, "Жодного фрагмента не нарізано — подивіться журнал.")
+            self.status.configure(text="● Не вдалося нарізати", text_color="#FF453A")
+            messagebox.showerror(APP_TITLE, "Фрагмент не нарізано — подивіться журнал.")
 
     def _poll(self):
         try:
