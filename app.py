@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Fragment Cutter 2.3 — пакетна нарізка фрагментів з YouTube зі списку.
+"""Fragment Cutter 2.4 — пакетна нарізка фрагментів з YouTube зі списку.
 
 Одне вікно: вставляєш список (рядок = посилання + час, напр.
 «https://youtu.be/... 0:47-1:04») — програма послідовно нарізає всі
@@ -24,8 +24,8 @@ import tkinter
 import customtkinter as ctk
 
 APP_TITLE = "Fragment Cutter"
-APP_VERSION = "2.3"
-UA_STRING = "FragmentCutter/2.3 (Windows)"
+APP_VERSION = "2.4"
+UA_STRING = "FragmentCutter/2.4 (Windows)"
 
 OUT_DIR = os.path.join(os.path.expanduser("~"), "Videos", "Fragments")
 LOG_FILE = os.path.join(OUT_DIR, "fragcut.log")
@@ -198,7 +198,8 @@ def ytdlp_run(ytdlp, ffdir, url, t1, t2, out, extra):
         "--windows-filenames",
         "-o", out,
     ] + extra + [url]
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
 class App(ctk.CTk):
@@ -372,6 +373,7 @@ class App(ctk.CTk):
             self._journal("⚠️ Не знайшов жодного валідного фрагмента. Приклад рядка: https://youtu.be/VIDEO_ID 0:47-1:04")
             return
         self.running = True
+        self._bot_hits = 0
         self.go.configure(state="disabled")
         self.status.configure(text="● Наріжаю 1/{}…".format(len(items)), text_color="#F59E0B")
         self.bar.configure(mode="indeterminate")
@@ -411,6 +413,7 @@ class App(ctk.CTk):
                 else:
                     failed.append(num)
                     say("⏭️ Далі…")
+                time.sleep(2)
         except Exception as e:
             say("❌ Помилка: {}".format(e))
         say("=== Готово: {} з {} ===".format(done_ok, total))
@@ -427,49 +430,80 @@ class App(ctk.CTk):
                 say("🔁 {} — був збій, за 3 сек пробую ще раз…".format(num))
                 time.sleep(3)
                 for f in os.listdir(OUT_DIR):
-                    if f.startswith(num + "."):
+                    if f != num + ".mp4" and (f.startswith(num + ".") or f.startswith(num + "_")):
                         try:
                             os.remove(os.path.join(OUT_DIR, f))
                         except Exception:
                             pass
             if self._cut_try(say, tools, url, t1, t2, out, num):
                 return True
-        left = [f for f in os.listdir(OUT_DIR) if f.startswith(num + ".")]
+        left = [f for f in os.listdir(OUT_DIR) if f != num + ".mp4" and (f.startswith(num + ".") or f.startswith(num + "_"))]
         if left:
             say("⚠️ У папці лишився файл: " + ", ".join(left)[:200])
         return False
 
     def _cut_try(self, say, tools, url, t1, t2, out, num):
-        """Один підхід до нарізки фрагмента."""
+        """Один підхід до нарізки фрагмента (файл захищений: ріжемо в тимчаский)."""
         try:
-            if os.path.exists(out):
-                say("♻️ {} перерізую".format(num))
+            tmp = os.path.join(OUT_DIR, num + "_tmp.mp4")
+            if os.path.exists(tmp):
                 try:
-                    os.remove(out)
+                    os.remove(tmp)
                 except Exception:
                     pass
+            if os.path.exists(out):
+                say("♻️ {} перерізую".format(num))
             try:
-                proc = ytdlp_run(tools["ytdlp"], tools["ffdir"], url, t1, t2, out, [])
+                proc = ytdlp_run(tools["ytdlp"], tools["ffdir"], url, t1, t2, tmp, [])
             except OSError:
                 say("❗ yt-dlp не запускається (ймовірно, антивірус його видалив) — завантажую заново…")
                 tools["ytdlp"] = ensure_ytdlp(say, force=True)
-                proc = ytdlp_run(tools["ytdlp"], tools["ffdir"], url, t1, t2, out, [])
+                proc = ytdlp_run(tools["ytdlp"], tools["ffdir"], url, t1, t2, tmp, [])
             if proc is None:
                 say("❌ yt-dlp не запустився")
                 return False
-            if proc.returncode == 0 and os.path.isfile(out):
+            if proc.returncode == 0 and os.path.isfile(tmp):
+                os.replace(tmp, out)
                 return True
             err = (proc.stdout or "") + "\n" + (proc.stderr or "")
             self._log_raw("=== [{}] yt-dlp повний вивід ===\n{}".format(num, err))
-            if "Sign in to confirm" in err or "not a bot" in err:
-                say("🤖 YouTube просить підтвердження «не робот» — пробую інший спосіб…")
-                proc2 = ytdlp_run(tools["ytdlp"], tools["ffdir"], url, t1, t2, out,
-                                  ["--extractor-args", "youtube:player_client=tv"])
-                if proc2.returncode == 0 and os.path.isfile(out):
-                    return True
-                err2 = (proc2.stdout or "") + "\n" + (proc2.stderr or "")
-                self._log_raw("=== [{}] повторний вивід (player_client=tv) ===\n{}".format(num, err2))
-                err = err + "\n" + err2
+            if "Sign in to confirm" in err or "not a bot" in err or "page needs to be reloaded" in err.lower():
+                variants = (
+                    ("TV-клієнт", ["--extractor-args", "youtube:player_client=tv"]),
+                    ("куки Chrome", ["--cookies-from-browser", "chrome"]),
+                    ("куки Edge", ["--cookies-from-browser", "edge"]),
+                    ("куки Firefox", ["--cookies-from-browser", "firefox"]),
+                )
+                for tag, extra2 in variants:
+                    say("🤖 YouTube просить «не робот» — пробую: {}…".format(tag))
+                    proc2 = ytdlp_run(tools["ytdlp"], tools["ffdir"], url, t1, t2, tmp, extra2)
+                    if proc2.returncode == 0 and os.path.isfile(tmp):
+                        os.replace(tmp, out)
+                        return True
+                    err2 = (proc2.stdout or "") + "\n" + (proc2.stderr or "")
+                    self._log_raw("=== [{}] повторний вивід ({}) ===\n{}".format(num, tag, err2))
+                    err = err + "\n" + err2
+                if not tools.get("ytdlp_updated"):
+                    tools["ytdlp_updated"] = True
+                    say("⬆️ Пробую оновити yt-dlp до найсвіжішої версії…")
+                    try:
+                        up = subprocess.run([tools["ytdlp"], "--update-to", "nightly"],
+                                            capture_output=True, text=True, encoding="utf-8",
+                                            errors="replace",
+                                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        self._log_raw("=== оновлення yt-dlp ===\n" + (up.stdout or "") + "\n" + (up.stderr or ""))
+                        if up.returncode == 0:
+                            say("✔️ yt-dlp оновлено — пробую ще раз…")
+                            proc3 = ytdlp_run(tools["ytdlp"], tools["ffdir"], url, t1, t2, tmp, [])
+                            if proc3.returncode == 0 and os.path.isfile(tmp):
+                                os.replace(tmp, out)
+                                return True
+                            err = err + "\n" + (proc3.stdout or "") + "\n" + (proc3.stderr or "")
+                        else:
+                            say("⚠️ yt-dlp не оновився — продовжую як є")
+                    except Exception as ue:
+                        say("⚠️ Не вдалося оновити yt-dlp: {}".format(ue))
+                self._bot_hits = getattr(self, "_bot_hits", 0) + 1
             lines = [x.strip() for x in err.splitlines() if x.strip()]
             errs = [x for x in lines if x.startswith("ERROR")][:3]
             if errs:
@@ -489,6 +523,8 @@ class App(ctk.CTk):
         self.bar.configure(mode="determinate")
         self.bar.set(done_ok / total if total else 0)
         self.go.configure(state="normal")
+        if failed and getattr(self, "_bot_hits", 0):
+            self._journal("🤖 YouTube тимчасово блокує завантаження («не робот»). Зачекай кілька годин і запусти той самий список знову — готові файли пропустяться автоматично.")
         if not failed:
             self.status.configure(text="● Готово: {} з {}".format(done_ok, total), text_color=GREEN)
             self._journal("✔️ Нарізано {} з {} фрагментів. Папку відкрито.".format(done_ok, total))
