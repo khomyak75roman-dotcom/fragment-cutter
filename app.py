@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Fragment Cutter 2.4 — пакетна нарізка фрагментів з YouTube зі списку.
+"""Fragment Cutter 2.5 — пакетна нарізка фрагментів з YouTube зі списку.
 
 Одне вікно: вставляєш список (рядок = посилання + час, напр.
 «https://youtu.be/... 0:47-1:04») — програма послідовно нарізає всі
@@ -24,8 +24,8 @@ import tkinter
 import customtkinter as ctk
 
 APP_TITLE = "Fragment Cutter"
-APP_VERSION = "2.4"
-UA_STRING = "FragmentCutter/2.4 (Windows)"
+APP_VERSION = "2.5"
+UA_STRING = "FragmentCutter/2.5 (Windows)"
 
 OUT_DIR = os.path.join(os.path.expanduser("~"), "Videos", "Fragments")
 LOG_FILE = os.path.join(OUT_DIR, "fragcut.log")
@@ -374,6 +374,7 @@ class App(ctk.CTk):
             return
         self.running = True
         self._bot_hits = 0
+        self._last_bot_hits = 0
         self.go.configure(state="disabled")
         self.status.configure(text="● Наріжаю 1/{}…".format(len(items)), text_color="#F59E0B")
         self.bar.configure(mode="indeterminate")
@@ -396,6 +397,7 @@ class App(ctk.CTk):
             tools["ffdir"] = os.path.dirname(ffp)
             overwrite = self.overwrite.get()
             skipped = 0
+            bot_streak = 0
             for i, (url, t1, t2) in enumerate(items, 1):
                 num = "{:02d}".format(i)
                 out = os.path.join(OUT_DIR, num + ".mp4")
@@ -409,11 +411,25 @@ class App(ctk.CTk):
                 ok = self._cut_one(say, tools, url, t1, t2, out, num)
                 if ok:
                     done_ok += 1
+                    bot_streak = 0
                     say("✅ Готово: {}.mp4".format(num))
                 else:
                     failed.append(num)
+                    if getattr(self, "_bot_hits", 0) > getattr(self, "_last_bot_hits", 0):
+                        bot_streak += 1
+                    else:
+                        bot_streak = 0
                     say("⏭️ Далі…")
+                self._last_bot_hits = getattr(self, "_bot_hits", 0)
                 time.sleep(2)
+                if bot_streak >= 3:
+                    say("🛑 YouTube заблокував завантаження з твоєї мережі: 3 фрагменти підряд не пройшли перевірку «не робот».")
+                    say("Що робити:")
+                    say("1) Найпростіше — зачекати кілька годин (або до завтра) і запустити той самий список: блок зніметься сам, а готові файли пропустяться.")
+                    say("2) Потрібно зараз? Роздай інтернет із телефона (точка доступу), підключи до нього комп'ютер і запусти список знову.")
+                    say("3) Якщо нарізуєш із запущеним Chrome/Edge — закрий їх повністю: тоді куки браузера зможуть допомогти.")
+                    say("⏹️ Зупиняю нарізку, щоб не подовжувати блок. Нічого не зламалось — просто спробуй пізніше.")
+                    break
         except Exception as e:
             say("❌ Помилка: {}".format(e))
         say("=== Готово: {} з {} ===".format(done_ok, total))
@@ -425,8 +441,12 @@ class App(ctk.CTk):
 
     def _cut_one(self, say, tools, url, t1, t2, out, num):
         """Нарізка одного фрагмента з автоповтором при збої; True якщо готовий."""
+        bot_before = getattr(self, "_bot_hits", 0)
         for attempt in (1, 2):
             if attempt > 1:
+                if getattr(self, "_bot_hits", 0) > bot_before:
+                    say("🤖 Перевірка «не робот» — повтор зараз не допоможе, пропускаю")
+                    break
                 say("🔁 {} — був збій, за 3 сек пробую ще раз…".format(num))
                 time.sleep(3)
                 for f in os.listdir(OUT_DIR):
@@ -469,20 +489,30 @@ class App(ctk.CTk):
             self._log_raw("=== [{}] yt-dlp повний вивід ===\n{}".format(num, err))
             if "Sign in to confirm" in err or "not a bot" in err or "page needs to be reloaded" in err.lower():
                 variants = (
+                    ("клієнт Android VR", ["--extractor-args", "youtube:player_client=android_vr"]),
                     ("TV-клієнт", ["--extractor-args", "youtube:player_client=tv"]),
                     ("куки Chrome", ["--cookies-from-browser", "chrome"]),
                     ("куки Edge", ["--cookies-from-browser", "edge"]),
                     ("куки Firefox", ["--cookies-from-browser", "firefox"]),
+                    ("IPv4 + Android VR", ["-4", "--extractor-args", "youtube:player_client=android_vr"]),
                 )
+                bad = tools.setdefault("bad_variants", [])
                 for tag, extra2 in variants:
+                    if tag in bad:
+                        continue
                     say("🤖 YouTube просить «не робот» — пробую: {}…".format(tag))
                     proc2 = ytdlp_run(tools["ytdlp"], tools["ffdir"], url, t1, t2, tmp, extra2)
                     if proc2.returncode == 0 and os.path.isfile(tmp):
                         os.replace(tmp, out)
                         return True
                     err2 = (proc2.stdout or "") + "\n" + (proc2.stderr or "")
+                    if "Could not copy" in err2 and not tools.get("cookies_hint"):
+                        tools["cookies_hint"] = True
+                        say("ℹ️ Куки не вдалося прочитати: закрий повністю браузер (Chrome/Edge) і спробуй нарізку ще раз.")
                     self._log_raw("=== [{}] повторний вивід ({}) ===\n{}".format(num, tag, err2))
                     err = err + "\n" + err2
+                    if "Could not copy" in err2 or "Sign in to confirm" in err2 or "not a bot" in err2:
+                        bad.append(tag)
                 if not tools.get("ytdlp_updated"):
                     tools["ytdlp_updated"] = True
                     say("⬆️ Пробую оновити yt-dlp до найсвіжішої версії…")
